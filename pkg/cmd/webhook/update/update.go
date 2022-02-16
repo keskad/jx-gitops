@@ -106,13 +106,17 @@ func (o *Options) Validate() error {
 	if err != nil {
 		return errors.Wrapf(err, "failed to create jx client")
 	}
+	log.Logger().Debugln("Looking for development namespace in `kind: Environment` .spec.name=dev")
 	ns, _, err := jxenv.GetDevNamespace(o.KubeClient, o.Namespace)
 	if err != nil {
 		return errors.Wrapf(err, "failed to find dev namespace in %s", o.Namespace)
 	}
 	if ns != "" {
 		o.Namespace = ns
+		log.Logger().Debugf("[GetDevNamespace] Setting namespace=%v", o.Namespace)
 	}
+
+	log.Logger().Debugf("Finally using namespace=%v", o.Namespace)
 
 	if o.Endpoint == "" {
 		o.Endpoint, err = o.GetWebHookEndpointFromHook()
