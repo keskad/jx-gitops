@@ -22,6 +22,7 @@ func TestOptions_MatchesPodDoesNotMatchForNonFinishedPhase(t *testing.T) {
 // covers MatchesPod date & time checks
 func TestOptions_MatchesPodDoesNotMatchForTooYoungPods(t *testing.T) {
 	type testVariant struct {
+		name                string
 		containerFinishedAt time.Time
 		maxAge              time.Duration
 		shouldMatchPod      bool
@@ -29,11 +30,13 @@ func TestOptions_MatchesPodDoesNotMatchForTooYoungPods(t *testing.T) {
 
 	matrix := []testVariant{
 		{
+			name:                "pod finished yesterday, should be deleted 1h after finish, so true",
 			containerFinishedAt: time.Now().Add(time.Hour * 24 * -1), // yesterday
 			maxAge:              time.Hour * 1,                       // max 1 hour
 			shouldMatchPod:      true,                                // yes, finished yesterday, so older than 1 hour
 		},
 		{
+			name:                "pod finished just now, have remaining 1h to be deleted",
 			containerFinishedAt: time.Now(),    // JUST NOW
 			maxAge:              time.Hour * 1, // max 1 hour
 			shouldMatchPod:      false,         // nope, just finished, will keep for 1 hour still
