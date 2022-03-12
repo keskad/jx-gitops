@@ -4,13 +4,14 @@ import (
 	"fmt"
 	"io/ioutil"
 	"os"
+	"path"
 	"path/filepath"
+	"strings"
 
 	"github.com/jenkins-x-plugins/jx-gitops/pkg/rootcmd"
 	"github.com/jenkins-x/jx-helpers/v3/pkg/cobras/helper"
 	"github.com/jenkins-x/jx-helpers/v3/pkg/cobras/templates"
 	"github.com/jenkins-x/jx-helpers/v3/pkg/files"
-	"github.com/jenkins-x/jx-helpers/v3/pkg/kyamls"
 	"github.com/jenkins-x/jx-helpers/v3/pkg/options"
 	"github.com/jenkins-x/jx-helpers/v3/pkg/stringhelpers"
 	"github.com/jenkins-x/jx-helpers/v3/pkg/termcolor"
@@ -22,6 +23,9 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/kustomize/kyaml/yaml"
 )
+
+const LabelKeepNamespace = "gitops.jenkins-x.io/namespaceChange"
+const LabelKeepNamespaceValue = "keep-namespace"
 
 var (
 	namespaceLong = templates.LongDesc(`
@@ -37,6 +41,14 @@ var (
 		# e.g. so that the files 'config-root/namespaces/cheese/*.yaml' get set to namespace 'cheese' 
 		# and 'config-root/namespaces/wine/*.yaml' are set to 'wine'
 		%s namespace --dir-mode --dir config-root/namespaces
+
+		# exception: some resources can be marked with annotation to do not enforce a namespace
+		# e.g. 'gitops.jenkins-x.io/namespaceChange=keep-namespace'
+		# All annotated resource files WILL BE MOVED to their namepace directories
+		#
+		#  Example:
+		#      RoleBinding annotated with 'gitops.jenkins-x.io/namespaceChange=keep-namespace' and having namespace=my-namespace
+		#      Will be moved to config-root/namespaces/my-namespace/
 	`)
 )
 
@@ -182,11 +194,29 @@ func (o *Options) lazyCreateNamespaceResource(ns string) error {
 
 // UpdateNamespaceInYamlFiles updates the namespace in yaml files
 func UpdateNamespaceInYamlFiles(dir string, ns string, filter kyamls.Filter) error { //nolint:gocritic
-	modifyFn := func(node *yaml.RNode, path string) (bool, error) {
+	type docToMoveToOtherNs struct {
+		path      string
+		namespace string
+	}
+
+	var toMoveToNsDirectory []docToMoveToOtherNs
+
+	modifyContentFn := func(node *yaml.RNode, path string) (bool, error) {
 		kind := kyamls.GetKind(node, path)
 
 		// ignore common cluster based resources
 		if kyamls.IsClusterKind(kind) {
+			return false, nil
+		}
+
+		// keep a namespace, and allow to move this file to a directory named with that namespace
+		preserveOriginalNamespace, preserveErr := shouldPreserveNamespace(node, path)
+		if preserveErr != nil {
+			return false, errors.Wrap(preserveErr, "failed to check if namespace should be preserved")
+		}
+		if preserveOriginalNamespace {
+			namespace, _ := getNamespaceToPreserve(node, path)
+			toMoveToNsDirectory = append(toMoveToNsDirectory, docToMoveToOtherNs{path: path, namespace: namespace})
 			return false, nil
 		}
 
@@ -197,9 +227,65 @@ func UpdateNamespaceInYamlFiles(dir string, ns string, filter kyamls.Filter) err
 		return true, nil
 	}
 
-	err := kyamls.ModifyFiles(dir, modifyFn, filter)
+	err := kyamls.ModifyFiles(dir, modifyContentFn, filter)
 	if err != nil {
 		return errors.Wrapf(err, "failed to modify namespace to %s in dir %s", ns, dir)
 	}
+
+	// files marked to keep their originally defined namespace will be moved to a directory
+	// named same as .metadata.namespace
+	for _, element := range toMoveToNsDirectory {
+		if err := moveToTargetNamespace(dir, element.path, element.namespace); err != nil {
+			return err
+		}
+	}
+
 	return nil
+}
+
+func moveToTargetNamespace(rootDir string, originalPath string, namespace string) error {
+	relativePath := originalPath[len(rootDir):]
+
+	rootDirSplit := strings.Split(rootDir, "/")
+	rootDirWithoutNs := strings.Join(rootDirSplit[0:len(rootDirSplit)-1], "/")
+
+	newNamespacedDirPath := rootDirWithoutNs + "/" + namespace + path.Dir(relativePath)
+	newNamespacedFilePath := rootDirWithoutNs + "/" + namespace + "/" + relativePath
+
+	if err := os.MkdirAll(newNamespacedDirPath, 0755); err != nil {
+		return errors.Wrapf(err, "cannot create a directory for target namespace '%s'", namespace)
+	}
+
+	log.Logger().Infof("Moving '%s' to '%s' as there is label to keep the namespace", originalPath, newNamespacedFilePath)
+	if err := os.Rename(originalPath, newNamespacedFilePath); err != nil {
+		return errors.Wrap(err, "cannot move YAML file to target namespace directory")
+	}
+
+	return nil
+}
+
+func shouldPreserveNamespace(node *yaml.RNode, path string) (bool, error) {
+	ns, err := getNamespaceToPreserve(node, path)
+	if err != nil {
+		return false, err
+	}
+
+	return ns != "", nil
+}
+
+func getNamespaceToPreserve(node *yaml.RNode, path string) (string, error) {
+	existingNs := kyamls.GetNamespace(node, path)
+
+	if existingNs != "" {
+		labels, labelsParsingErr := kyamls.GetAnnotations(node, path)
+		if labelsParsingErr != nil {
+			return "", errors.Wrapf(labelsParsingErr, "cannot update namespace in file %s", path)
+		}
+
+		if preserveLabel, _ := labels[LabelKeepNamespace]; strings.Trim(preserveLabel, "'\"") == LabelKeepNamespaceValue {
+			return existingNs, nil
+		}
+	}
+
+	return "", nil
 }
