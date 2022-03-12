@@ -1,6 +1,7 @@
-package namespace_test
+package namespace
 
 import (
+	"fmt"
 	"io/ioutil"
 	"os"
 	"path/filepath"
@@ -8,7 +9,6 @@ import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
-	"github.com/jenkins-x-plugins/jx-gitops/pkg/cmd/namespace"
 	"github.com/jenkins-x/jx-helpers/v3/pkg/files"
 	"github.com/jenkins-x/jx-helpers/v3/pkg/kyamls"
 	"github.com/pkg/errors"
@@ -54,7 +54,7 @@ func TestUpdateNamespaceInYamlFiles(t *testing.T) {
 
 	}
 
-	err = namespace.UpdateNamespaceInYamlFiles(tmpDir, "something", kyamls.Filter{})
+	err = UpdateNamespaceInYamlFiles(tmpDir, tmpDir, "something", kyamls.Filter{})
 	require.NoError(t, err, "failed to update namespace in dir %s", tmpDir)
 
 	for _, tc := range testCases {
@@ -87,7 +87,7 @@ func TestNamespaceDirMode(t *testing.T) {
 	err = files.CopyDirOverwrite(srcFile, tmpDir)
 	require.NoError(t, err, "failed to copy %s to %s", srcFile, tmpDir)
 
-	o := &namespace.Options{
+	o := &Options{
 		Dir:     tmpDir,
 		DirMode: true,
 	}
@@ -151,4 +151,62 @@ func TestNamespaceDirMode(t *testing.T) {
 		}
 	}
 	assert.Len(t, found, 2, "found namespaces")
+}
+
+func TestShouldPreserveNamespace(t *testing.T) {
+	path := "test_data/dirmode-with-exceptions/jx/service-preserve.yaml"
+	rNode, readErr := yaml.ReadFile(path)
+	result, err := shouldPreserveNamespace(rNode, path)
+
+	assert.Nil(t, readErr)
+	assert.Nil(t, err)
+	assert.True(t, result)
+}
+
+func TestShouldPreserveNamespace_WithoutAnnotationWillNotKeepOriginalNamespace(t *testing.T) {
+	path := "test_data/dirmode-with-exceptions/jx/service-do-not-preserve.yaml"
+	rNode, readErr := yaml.ReadFile(path)
+	result, err := shouldPreserveNamespace(rNode, path)
+
+	assert.Nil(t, readErr)
+	assert.Nil(t, err)
+	assert.False(t, result)
+}
+
+func TestGetNamespaceToPreserveIfShouldKeepIt(t *testing.T) {
+	path := "test_data/dirmode-with-exceptions/jx/service-preserve.yaml"
+	rNode, readErr := yaml.ReadFile(path)
+	ns, err := getNamespaceToPreserveIfShouldKeepIt(rNode, path)
+
+	assert.Nil(t, readErr)
+	assert.Nil(t, err)
+	assert.Equal(t, "some-other-namespace", ns)
+}
+
+func TestMoveToTargetNamespace(t *testing.T) {
+	mock := osToolsMock{}
+
+	_ = moveToTargetNamespace(
+		"test_data/dirmode-with-exceptions-move",
+		"test_data/dirmode-with-exceptions-move/jx/service-preserve.yaml",
+		"some-other-namespace",
+		"jx",
+		&mock)
+
+	assert.Contains(t, mock.calls[0], "test_data/dirmode-with-exceptions-move/some-other-namespace && chmod -rwxr-xr-x")
+	assert.Contains(t, mock.calls[1], "test_data/dirmode-with-exceptions-move/some-other-namespace/service-preserve.yaml")
+}
+
+type osToolsMock struct {
+	calls []string
+}
+
+func (o *osToolsMock) MkdirAll(path string, perm os.FileMode) error {
+	o.calls = append(o.calls, fmt.Sprintf("mkdir -p %s && chmod %s", path, perm.String()))
+	return nil
+}
+
+func (o *osToolsMock) Rename(oldpath, newpath string) error {
+	o.calls = append(o.calls, fmt.Sprintf("mv %s %s", oldpath, newpath))
+	return nil
 }

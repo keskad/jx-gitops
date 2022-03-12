@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"io/ioutil"
 	"os"
-	"path"
 	"path/filepath"
 	"strings"
 
@@ -25,7 +24,7 @@ import (
 )
 
 const LabelKeepNamespace = "gitops.jenkins-x.io/namespaceChange"
-const LabelKeepNamespaceValue = "keep-namespace"
+const LabelKeepNamespaceValue = "keep-namespace-move-file"
 
 var (
 	namespaceLong = templates.LongDesc(`
@@ -43,11 +42,11 @@ var (
 		%s namespace --dir-mode --dir config-root/namespaces
 
 		# exception: some resources can be marked with annotation to do not enforce a namespace
-		# e.g. 'gitops.jenkins-x.io/namespaceChange=keep-namespace'
+		# e.g. 'gitops.jenkins-x.io/namespaceChange=keep-namespace-move-file'
 		# All annotated resource files WILL BE MOVED to their namepace directories
 		#
 		#  Example:
-		#      RoleBinding annotated with 'gitops.jenkins-x.io/namespaceChange=keep-namespace' and having namespace=my-namespace
+		#      RoleBinding annotated with 'gitops.jenkins-x.io/namespaceChange=keep-namespace-move-file' and having namespace=my-namespace
 		#      Will be moved to config-root/namespaces/my-namespace/
 	`)
 )
@@ -99,7 +98,7 @@ func (o *Options) Run() error {
 		if ns == "" {
 			return options.MissingOption("namespace")
 		}
-		return UpdateNamespaceInYamlFiles(o.Dir, ns, o.Filter)
+		return UpdateNamespaceInYamlFiles(o.Dir, o.Dir, ns, o.Filter)
 	}
 
 	return o.RunDirMode()
@@ -122,7 +121,7 @@ func (o *Options) RunDirMode() error {
 		name := f.Name()
 
 		dir := filepath.Join(o.Dir, name)
-		err = UpdateNamespaceInYamlFiles(dir, name, o.Filter)
+		err = UpdateNamespaceInYamlFiles(o.Dir, dir, name, o.Filter)
 		if err != nil {
 			return err
 		}
@@ -193,12 +192,12 @@ func (o *Options) lazyCreateNamespaceResource(ns string) error {
 }
 
 // UpdateNamespaceInYamlFiles updates the namespace in yaml files
-func UpdateNamespaceInYamlFiles(dir string, ns string, filter kyamls.Filter) error { //nolint:gocritic
+func UpdateNamespaceInYamlFiles(rootDir string, dir string, ns string, filter kyamls.Filter) error { //nolint:gocritic
 	type docToMoveToOtherNs struct {
-		path      string
-		namespace string
+		path         string
+		namespace    string
+		oldNamespace string
 	}
-
 	var toMoveToNsDirectory []docToMoveToOtherNs
 
 	modifyContentFn := func(node *yaml.RNode, path string) (bool, error) {
@@ -215,8 +214,8 @@ func UpdateNamespaceInYamlFiles(dir string, ns string, filter kyamls.Filter) err
 			return false, errors.Wrap(preserveErr, "failed to check if namespace should be preserved")
 		}
 		if preserveOriginalNamespace {
-			namespace, _ := getNamespaceToPreserve(node, path)
-			toMoveToNsDirectory = append(toMoveToNsDirectory, docToMoveToOtherNs{path: path, namespace: namespace})
+			namespace, _ := getNamespaceToPreserveIfShouldKeepIt(node, path)
+			toMoveToNsDirectory = append(toMoveToNsDirectory, docToMoveToOtherNs{path: path, namespace: namespace, oldNamespace: ns})
 			return false, nil
 		}
 
@@ -235,7 +234,7 @@ func UpdateNamespaceInYamlFiles(dir string, ns string, filter kyamls.Filter) err
 	// files marked to keep their originally defined namespace will be moved to a directory
 	// named same as .metadata.namespace
 	for _, element := range toMoveToNsDirectory {
-		if err := moveToTargetNamespace(dir, element.path, element.namespace); err != nil {
+		if err := moveToTargetNamespace(rootDir, element.path, element.namespace, element.oldNamespace, &osToolsImpl{}); err != nil {
 			return err
 		}
 	}
@@ -243,21 +242,24 @@ func UpdateNamespaceInYamlFiles(dir string, ns string, filter kyamls.Filter) err
 	return nil
 }
 
-func moveToTargetNamespace(rootDir string, originalPath string, namespace string) error {
-	relativePath := originalPath[len(rootDir):]
+func moveToTargetNamespace(rootDir string, originalPath string, namespace string, oldNamespace string, osUtils osTools) error {
+	// normalize to absolute paths
+	rootDir, _ = filepath.Abs(rootDir)
+	originalPath, _ = filepath.Abs(originalPath)
+	rootDir = strings.TrimSuffix(rootDir, "/") // normalize
 
-	rootDirSplit := strings.Split(rootDir, "/")
-	rootDirWithoutNs := strings.Join(rootDirSplit[0:len(rootDirSplit)-1], "/")
+	// extract subdirectory structure in existing namespace
+	relativePath := originalPath[len(rootDir+"/"+oldNamespace):]
 
-	newNamespacedDirPath := rootDirWithoutNs + "/" + namespace + path.Dir(relativePath)
-	newNamespacedFilePath := rootDirWithoutNs + "/" + namespace + "/" + relativePath
+	newNamespacedDirPath := rootDir + "/" + namespace
+	newNamespacedFilePath := newNamespacedDirPath + relativePath
 
-	if err := os.MkdirAll(newNamespacedDirPath, 0755); err != nil {
+	if err := osUtils.MkdirAll(filepath.Dir(newNamespacedFilePath), 0755); err != nil {
 		return errors.Wrapf(err, "cannot create a directory for target namespace '%s'", namespace)
 	}
 
 	log.Logger().Infof("Moving '%s' to '%s' as there is label to keep the namespace", originalPath, newNamespacedFilePath)
-	if err := os.Rename(originalPath, newNamespacedFilePath); err != nil {
+	if err := osUtils.Rename(originalPath, newNamespacedFilePath); err != nil {
 		return errors.Wrap(err, "cannot move YAML file to target namespace directory")
 	}
 
@@ -265,7 +267,7 @@ func moveToTargetNamespace(rootDir string, originalPath string, namespace string
 }
 
 func shouldPreserveNamespace(node *yaml.RNode, path string) (bool, error) {
-	ns, err := getNamespaceToPreserve(node, path)
+	ns, err := getNamespaceToPreserveIfShouldKeepIt(node, path)
 	if err != nil {
 		return false, err
 	}
@@ -273,7 +275,7 @@ func shouldPreserveNamespace(node *yaml.RNode, path string) (bool, error) {
 	return ns != "", nil
 }
 
-func getNamespaceToPreserve(node *yaml.RNode, path string) (string, error) {
+func getNamespaceToPreserveIfShouldKeepIt(node *yaml.RNode, path string) (string, error) {
 	existingNs := kyamls.GetNamespace(node, path)
 
 	if existingNs != "" {
@@ -288,4 +290,18 @@ func getNamespaceToPreserve(node *yaml.RNode, path string) (string, error) {
 	}
 
 	return "", nil
+}
+
+type osTools interface {
+	MkdirAll(path string, perm os.FileMode) error
+	Rename(oldpath, newpath string) error
+}
+type osToolsImpl struct{}
+
+func (o *osToolsImpl) MkdirAll(path string, perm os.FileMode) error {
+	return os.MkdirAll(path, perm)
+}
+
+func (o *osToolsImpl) Rename(oldpath, newpath string) error {
+	return os.Rename(oldpath, newpath)
 }
