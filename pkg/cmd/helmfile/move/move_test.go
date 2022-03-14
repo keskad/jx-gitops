@@ -1,12 +1,12 @@
-package move_test
+package move
 
 import (
 	"io/ioutil"
 	"path/filepath"
+	"sigs.k8s.io/kustomize/kyaml/yaml"
 	"strings"
 	"testing"
 
-	"github.com/jenkins-x-plugins/jx-gitops/pkg/cmd/helmfile/move"
 	"github.com/jenkins-x/jx-helpers/v3/pkg/yamls"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -39,6 +39,8 @@ func TestUpdateNamespaceInYamlFiles(t *testing.T) {
 				"customresourcedefinitions/jx/lighthouse-2/lighthousejobs.lighthouse.jenkins.io-crd.yaml",
 				"cluster/resources/nginx/nginx-ingress-2/nginx-ingress-clusterrole.yaml",
 				"namespaces/jx/lighthouse-2/lighthouse-foghorn-deploy.yaml",
+				"namespaces/jx-team2/lighthouse/gcjob-jx-team2-rb.yaml",
+				"namespaces/jx-test1/lighthouse/gcjob-jx-test1-rb.yaml",
 				"namespaces/jx/chart-release/example.yaml",
 			},
 
@@ -54,7 +56,7 @@ func TestUpdateNamespaceInYamlFiles(t *testing.T) {
 		tmpDir, err := ioutil.TempDir("", "")
 		require.NoError(t, err, "could not create temp dir")
 
-		_, o := move.NewCmdHelmfileMove()
+		_, o := NewCmdHelmfileMove()
 
 		t.Logf("generating output to %s\n", tmpDir)
 
@@ -79,7 +81,7 @@ func TestUpdateNamespaceInYamlFiles(t *testing.T) {
 					require.NoError(t, err, "failed to load %s", ef)
 					ann := u.GetAnnotations()
 					require.NotNil(t, ann, "should have annotations for file %s", ef)
-					annotation := move.HelmReleaseNameAnnotation
+					annotation := HelmReleaseNameAnnotation
 					value := ann[annotation]
 					assert.Equal(t, expectedAnnotation, value, "for annotation %s in file %s", annotation, ef)
 					t.Logf("expected helm annotation is %s\n", value)
@@ -87,4 +89,46 @@ func TestUpdateNamespaceInYamlFiles(t *testing.T) {
 			}
 		}
 	}
+}
+
+func TestShouldOverwriteNamespace(t *testing.T) {
+	path := "test_data/dirIncludesReleaseName/jx/lighthouse/lighthouse/templates/gcjob-jx-team2-rb.yaml"
+	node, err := yaml.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	assert.False(t, shouldSetResourceNamespaceMetadata(node, path))
+}
+
+func TestGetTargetNamespace_WithNamespaceDefinedInResourceFile(t *testing.T) {
+	path := "test_data/dirIncludesReleaseName/jx/lighthouse/lighthouse/templates/gcjob-jx-team2-rb.yaml"
+	node, err := yaml.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	assert.Equal(t, "jx-team2", getTargetNamespace(node, path, "jx-other"), "Resource already has .metadata.namespace required, so it should be returned")
+}
+
+func TestGetTargetNamespace_WhenNamespaceIsNotDefinedInMetadataAndShouldBeEnforced(t *testing.T) {
+	path := "test_data/dirIncludesReleaseName/jx/lighthouse/lighthouse/templates/gcjob-rb.yaml"
+	node, err := yaml.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	assert.Equal(t, "jx-other", getTargetNamespace(node, path, "jx-other"), "Resource file does not define .metadata.namespace, so it should be set to specified by argument")
+}
+
+func TestOptions_BuildOutDir(t *testing.T) {
+	path := "test_data/dirIncludesReleaseName/jx/lighthouse/lighthouse/templates/gcjob-rb.yaml"
+	node, err := yaml.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	o := Options{}
+	o.NamespacesDir = "/tmp/generated/namespaces"
+	assert.Equal(t, "/tmp/generated/namespaces/jenkins-x/jx-helmfile-something", o.buildOutDir(node, path, "jenkins-x", "jx-helmfile-something"))
 }
