@@ -54,7 +54,7 @@ func TestUpdateNamespaceInYamlFiles(t *testing.T) {
 
 	}
 
-	err = UpdateNamespaceInYamlFiles(tmpDir, tmpDir, "something", kyamls.Filter{})
+	_, err = UpdateNamespaceInYamlFiles(tmpDir, tmpDir, "something", kyamls.Filter{}, false)
 	require.NoError(t, err, "failed to update namespace in dir %s", tmpDir)
 
 	for _, tc := range testCases {
@@ -156,30 +156,27 @@ func TestNamespaceDirMode(t *testing.T) {
 func TestShouldPreserveNamespace(t *testing.T) {
 	path := "test_data/dirmode-with-exceptions/jx/service-preserve.yaml"
 	rNode, readErr := yaml.ReadFile(path)
-	result, err := shouldPreserveNamespace(rNode, path)
+	result := shouldPreserveNamespace(rNode, path)
 
 	assert.Nil(t, readErr)
-	assert.Nil(t, err)
 	assert.True(t, result)
 }
 
 func TestShouldPreserveNamespace_WithoutAnnotationWillNotKeepOriginalNamespace(t *testing.T) {
 	path := "test_data/dirmode-with-exceptions/jx/service-do-not-preserve.yaml"
 	rNode, readErr := yaml.ReadFile(path)
-	result, err := shouldPreserveNamespace(rNode, path)
+	result := shouldPreserveNamespace(rNode, path)
 
 	assert.Nil(t, readErr)
-	assert.Nil(t, err)
 	assert.False(t, result)
 }
 
 func TestGetNamespaceToPreserveIfShouldKeepIt(t *testing.T) {
 	path := "test_data/dirmode-with-exceptions/jx/service-preserve.yaml"
 	rNode, readErr := yaml.ReadFile(path)
-	ns, err := getNamespaceToPreserveIfShouldKeepIt(rNode, path)
+	ns := getNamespaceToPreserveIfShouldKeepIt(rNode, path)
 
 	assert.Nil(t, readErr)
-	assert.Nil(t, err)
 	assert.Equal(t, "some-other-namespace", ns)
 }
 
@@ -187,14 +184,14 @@ func TestMoveToTargetNamespace(t *testing.T) {
 	mock := osToolsMock{}
 
 	_ = moveToTargetNamespace(
-		"test_data/dirmode-with-exceptions-move",
-		"test_data/dirmode-with-exceptions-move/jx/service-preserve.yaml",
+		"test_data/dirmode-with-exceptions",
+		"test_data/dirmode-with-exceptions/jx/service-preserve.yaml",
 		"some-other-namespace",
 		"jx",
 		&mock)
 
-	assert.Contains(t, mock.calls[0], "test_data/dirmode-with-exceptions-move/some-other-namespace && chmod -rwxr-xr-x")
-	assert.Contains(t, mock.calls[1], "test_data/dirmode-with-exceptions-move/some-other-namespace/service-preserve.yaml")
+	assert.Contains(t, mock.calls[0], "test_data/dirmode-with-exceptions/some-other-namespace && chmod -rwxr-xr-x")
+	assert.Contains(t, mock.calls[1], "test_data/dirmode-with-exceptions/some-other-namespace/service-preserve.yaml")
 }
 
 type osToolsMock struct {

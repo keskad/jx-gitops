@@ -6,8 +6,6 @@ metadata:
     namespace: some-other-namespace
     labels:
         chart: cheese
-    annotations:
-        gitops.jenkins-x.io/namespaceChange: keep-namespace-move-file
 spec:
     ports:
         - port: 80
