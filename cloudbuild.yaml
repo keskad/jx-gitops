@@ -11,3 +11,5 @@ options:
 logsBucket: gs://jenkinsxio-labs-private
 images:
 - 'gcr.io/jenkinsxio-labs-private/jx-fn-label:${_VERSION}'
+
+
